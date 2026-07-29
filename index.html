@@ -549,8 +549,7 @@ let p2TimeRemaining = -1;
 let turnShotClock = 15;
 let currentTurnIdleTime = 0;
 
-let soundToggleBtn = { x: 0, y: 0, w: 0, h: 0 }, vibroToggleBtn = { x: 0, y: 0, w: 0, h: 0 }, erudaToggleBtn = { x: 0, y: 0, w: 0, h: 0 }, testAudioBtn = { x: 0, y: 0, w: 0, h: 0 };
-let soundImportBtns = [], soundResetBtns = [];
+let soundToggleBtn = { x: 0, y: 0, w: 0, h: 0 }, vibroToggleBtn = { x: 0, y: 0, w: 0, h: 0 }, erudaToggleBtn = { x: 0, y: 0, w: 0, h: 0 };
 let sliderX, sliderY, sliderW = 180, sliderH = 6;
 let isDraggingSlider = false;
 let p2LeftBtn, p2RightBtn, p1LeftBtn, p1RightBtn;
@@ -802,8 +801,6 @@ function getMatchTeamNameByColor(teamColor) {
 
 const gameSounds = {};
 const audioBuffers = {};
-const audioLoadStatus = {};
-const audioLoadErrors = {};
 let audioInitialized = false;
 let lastVibrationTime = 0;
 let lastHitSoundTime = 0;
@@ -847,316 +844,11 @@ function getAudioContext() {
     return audioCtx;
 }
 
-const DB_NAME = 'ChipShotAudioDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'custom_sounds';
-
-function openAudioDB() {
-    return new Promise((resolve, reject) => {
-        let request = indexedDB.open(DB_NAME, DB_VERSION);
-        request.onupgradeneeded = (e) => {
-            let db = e.target.result;
-            if (!db.objectStoreNames.contains(STORE_NAME)) {
-                db.createObjectStore(STORE_NAME, { keyPath: 'key' });
-            }
-        };
-        request.onsuccess = (e) => resolve(e.target.result);
-        request.onerror = (e) => reject(e.target.error);
-    });
-}
-
-function saveCustomSoundToDB(key, arrayBuffer) {
-    return openAudioDB().then(db => {
-        return new Promise((resolve, reject) => {
-            let tx = db.transaction(STORE_NAME, 'readwrite');
-            let store = tx.objectStore(STORE_NAME);
-            let request = store.put({ key: key, data: arrayBuffer });
-            request.onsuccess = () => resolve();
-            request.onerror = (e) => reject(e.target.error);
-        });
-    });
-}
-
-function getCustomSoundFromDB(key) {
-    return openAudioDB().then(db => {
-        return new Promise((resolve, reject) => {
-            let tx = db.transaction(STORE_NAME, 'readonly');
-            let store = tx.objectStore(STORE_NAME);
-            let request = store.get(key);
-            request.onsuccess = (e) => {
-                if (e.target.result) {
-                    resolve(e.target.result.data);
-                } else {
-                    resolve(null);
-                }
-            };
-            request.onerror = (e) => reject(e.target.error);
-        });
-    });
-}
-
-function deleteCustomSoundFromDB(key) {
-    return openAudioDB().then(db => {
-        return new Promise((resolve, reject) => {
-            let tx = db.transaction(STORE_NAME, 'readwrite');
-            let store = tx.objectStore(STORE_NAME);
-            let request = store.delete(key);
-            request.onsuccess = () => resolve();
-            request.onerror = (e) => reject(e.target.error);
-        });
-    });
-}
-
-let customSoundFileInput = null;
-let currentUploadingSoundKey = null;
-
-function initFileInput() {
-    if (customSoundFileInput) return;
-    customSoundFileInput = document.createElement('input');
-    customSoundFileInput.type = 'file';
-    customSoundFileInput.accept = 'audio/*';
-    customSoundFileInput.style.display = 'none';
-    document.body.appendChild(customSoundFileInput);
-    
-    customSoundFileInput.addEventListener('change', (e) => {
-        let file = e.target.files[0];
-        if (!file || !currentUploadingSoundKey) return;
-        
-        let reader = new FileReader();
-        reader.onload = (evt) => {
-            let arrayBuffer = evt.target.result;
-            let ctx = getAudioContext();
-            if (!ctx) {
-                alert("Ошибка: AudioContext не поддерживается в вашем браузере");
-                return;
-            }
-            
-            audioLoadStatus[currentUploadingSoundKey] = "DECODING";
-            ctx.decodeAudioData(arrayBuffer.slice(0), (decoded) => {
-                saveCustomSoundToDB(currentUploadingSoundKey, arrayBuffer)
-                    .then(() => {
-                        audioBuffers[currentUploadingSoundKey] = decoded;
-                        audioLoadStatus[currentUploadingSoundKey] = "CUSTOM";
-                        console.log(`Custom sound successfully loaded and saved: ${currentUploadingSoundKey}`);
-                        playSound('click');
-                    })
-                    .catch(err => {
-                        console.error("IndexedDB save error:", err);
-                        audioBuffers[currentUploadingSoundKey] = decoded;
-                        audioLoadStatus[currentUploadingSoundKey] = "CUSTOM";
-                    });
-            }, (err) => {
-                audioLoadStatus[currentUploadingSoundKey] = "DECODE_ERROR";
-                audioLoadErrors[currentUploadingSoundKey] = err ? (err.message || String(err)) : "Decode failed";
-                alert(`Не удалось декодировать аудиофайл для ${currentUploadingSoundKey}. Убедитесь, что это корректный MP3 или WAV файл.`);
-            });
-        };
-        reader.readAsArrayBuffer(file);
-    });
-}
-
-function triggerCustomSoundUpload(key) {
-    initFileInput();
-    currentUploadingSoundKey = key;
-    customSoundFileInput.value = '';
-    customSoundFileInput.click();
-}
-
-function generateSingleSynthBuffer(ctx, key) {
-    if (!ctx) return null;
-    const sampleRate = ctx.sampleRate || 44100;
-    
-    const soundSpecs = {
-        'ball_shot': {
-            duration: 0.15,
-            generate: (data, len) => {
-                let phase = 0;
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let freq = 40 + 120 * Math.exp(-35 * t);
-                    phase += (2 * Math.PI * freq) / sampleRate;
-                    let env = Math.exp(-15 * t);
-                    data[i] = Math.sin(phase) * env;
-                }
-            }
-        },
-        'ball_wall': {
-            duration: 0.12,
-            generate: (data, len) => {
-                let phase = 0;
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let freq = 80 + 170 * Math.exp(-40 * t);
-                    phase += (2 * Math.PI * freq) / sampleRate;
-                    let env = Math.exp(-20 * t);
-                    data[i] = Math.sin(phase) * env;
-                }
-            }
-        },
-        'chip_bounce': {
-            duration: 0.10,
-            generate: (data, len) => {
-                let phase = 0;
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let freq = 120 + 230 * Math.exp(-50 * t);
-                    phase += (2 * Math.PI * freq) / sampleRate;
-                    let env = Math.exp(-30 * t);
-                    data[i] = Math.sin(phase) * env;
-                }
-            }
-        },
-        'collide_chip': {
-            duration: 0.08,
-            generate: (data, len) => {
-                let phase = 0;
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let freq = 400 + 800 * Math.exp(-80 * t);
-                    phase += (2 * Math.PI * freq) / sampleRate;
-                    let env = Math.exp(-45 * t);
-                    data[i] = Math.sin(phase) * env;
-                }
-            }
-        },
-        'score': {
-            duration: 0.70,
-            generate: (data, len) => {
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let val = 0;
-                    if (t >= 0) {
-                        let env = Math.exp(-10 * (t - 0));
-                        val += 0.3 * Math.sin(2 * Math.PI * 523.25 * (t - 0)) * env;
-                    }
-                    if (t >= 0.12) {
-                        let env = Math.exp(-10 * (t - 0.12));
-                        val += 0.3 * Math.sin(2 * Math.PI * 659.25 * (t - 0.12)) * env;
-                    }
-                    if (t >= 0.24) {
-                        let env = Math.exp(-10 * (t - 0.24));
-                        val += 0.3 * Math.sin(2 * Math.PI * 783.99 * (t - 0.24)) * env;
-                    }
-                    if (t >= 0.36) {
-                        let env = Math.exp(-6 * (t - 0.36));
-                        val += 0.4 * Math.sin(2 * Math.PI * 1046.50 * (t - 0.36)) * env;
-                    }
-                    data[i] = val;
-                }
-            }
-        },
-        'over': {
-            duration: 1.0,
-            generate: (data, len) => {
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let val = 0;
-                    if (t >= 0) {
-                        let freq = 392 * Math.exp(-2.0 * t);
-                        let env = Math.max(0, 1 - t);
-                        val += 0.2 * Math.sin(2 * Math.PI * freq * t) * env;
-                    }
-                    if (t >= 0.15) {
-                        let freq = 329 * Math.exp(-2.0 * (t - 0.15));
-                        let env = Math.max(0, 1 - t);
-                        val += 0.2 * Math.sin(2 * Math.PI * freq * (t - 0.15)) * env;
-                    }
-                    if (t >= 0.30) {
-                        let freq = 261 * Math.exp(-2.0 * (t - 0.3));
-                        let env = Math.max(0, 1 - t);
-                        val += 0.3 * Math.sin(2 * Math.PI * freq * (t - 0.3)) * env;
-                    }
-                    data[i] = val;
-                }
-            }
-        },
-        'click': {
-            duration: 0.05,
-            generate: (data, len) => {
-                for (let i = 0; i < len; i++) {
-                    let t = i / sampleRate;
-                    let env = Math.exp(-100 * t);
-                    data[i] = Math.sin(2 * Math.PI * 600 * t) * env;
-                }
-            }
-        }
-    };
-
-    try {
-        let spec = soundSpecs[key];
-        if (!spec) return null;
-        let len = Math.floor(spec.duration * sampleRate);
-        let buffer = ctx.createBuffer(1, len, sampleRate);
-        let channelData = buffer.getChannelData(0);
-        spec.generate(channelData, len);
-        return buffer;
-    } catch (e) {
-        console.error("Single synth failed:", e);
-        return null;
-    }
-}
-
-function reloadSound(key) {
-    let ctx = getAudioContext();
-    if (!ctx) return;
-    
-    audioLoadStatus[key] = "LOADING";
-    const soundFiles = {
-        'ball_shot':    'ball_shot.mp3',
-        'ball_wall':    'chip_bounce.mp3',
-        'chip_bounce':  'chip_bounce.mp3',
-        'collide_chip': 'chip_bounce.mp3',
-        'score':        'score.mp3',
-        'over':         'over.mp3',
-        'click':        'click.mp3'
-    };
-    
-    let url = soundFiles[key];
-    fetch(url)
-        .then(res => {
-            if (!res.ok) throw new Error("HTTP status " + res.status);
-            return res.arrayBuffer();
-        })
-        .then(buf => {
-            audioLoadStatus[key] = "DECODING";
-            ctx.decodeAudioData(buf, 
-                (decoded) => {
-                    audioBuffers[key] = decoded;
-                    audioLoadStatus[key] = "LOADED";
-                    console.log("Audio decoded successfully from server on reload: " + key);
-                }, 
-                (err) => {
-                    console.warn("Server file decode failed on reload, synthesizing fallback: " + key, err);
-                    fallbackToSynth(key, "DECODE_ERROR", err ? (err.message || String(err)) : "Decode failed");
-                }
-            );
-        })
-        .catch((err) => {
-            console.warn("Server file load failed on reload, synthesizing fallback: " + key, err);
-            fallbackToSynth(key, "FETCH_ERROR", err.message || String(err));
-        });
-
-    function fallbackToSynth(key, errType, errMsg) {
-        audioLoadErrors[key] = errMsg;
-        let synthBuf = generateSingleSynthBuffer(ctx, key);
-        if (synthBuf) {
-            audioBuffers[key] = synthBuf;
-            audioLoadStatus[key] = "SYNTH";
-            console.log("Synthesized fallback sound for " + key);
-        } else {
-            audioLoadStatus[key] = "FAILED";
-        }
-    }
-}
-
 function initAudio() {
     if (audioInitialized) return; 
     audioInitialized = true;
     
     let ctx = getAudioContext();
-    if (!ctx) return;
-
-    const soundKeys = ['ball_shot', 'ball_wall', 'chip_bounce', 'collide_chip', 'score', 'over', 'click'];
     const soundFiles = {
         'ball_shot':    'ball_shot.mp3',
         'ball_wall':    'chip_bounce.mp3',
@@ -1167,108 +859,24 @@ function initAudio() {
         'click':        'click.mp3'
     };
 
-    soundKeys.forEach(key => {
-        audioLoadStatus[key] = "LOADING";
-        
-        getCustomSoundFromDB(key)
-            .then(customBuffer => {
-                if (customBuffer) {
-                    audioLoadStatus[key] = "DECODING";
-                    ctx.decodeAudioData(customBuffer.slice(0), 
-                        (decoded) => {
-                            audioBuffers[key] = decoded;
-                            audioLoadStatus[key] = "CUSTOM";
-                            console.log(`Loaded custom sound from IndexedDB: ${key}`);
-                        },
-                        (err) => {
-                            console.warn(`Failed to decode custom sound for ${key}, falling back to server/synth`, err);
-                            loadServerOrSynth(key);
-                        }
-                    );
-                } else {
-                    loadServerOrSynth(key);
-                }
-            })
-            .catch(err => {
-                console.warn(`IndexedDB error for ${key}, loading server/synth`, err);
-                loadServerOrSynth(key);
-            });
-    });
-
-    function loadServerOrSynth(key) {
-        let url = soundFiles[key];
-        fetch(url)
-            .then(res => {
-                if (!res.ok) throw new Error("HTTP status " + res.status);
-                return res.arrayBuffer();
-            })
-            .then(buf => {
-                audioLoadStatus[key] = "DECODING";
-                ctx.decodeAudioData(buf, 
-                    (decoded) => {
-                        audioBuffers[key] = decoded;
-                        audioLoadStatus[key] = "LOADED";
-                        console.log("Audio decoded successfully from server: " + key);
-                    }, 
-                    (err) => {
-                        console.warn("Server file decode failed, synthesizing fallback: " + key, err);
-                        fallbackToSynth(key, "DECODE_ERROR", err ? (err.message || String(err)) : "Decode failed");
-                    }
-                );
-            })
-            .catch((err) => {
-                console.warn("Server file load failed, synthesizing fallback: " + key, err);
-                fallbackToSynth(key, "FETCH_ERROR", err.message || String(err));
-            });
+    for (let key in soundFiles) {
+        gameSounds[key] = new Audio(soundFiles[key]);
+        gameSounds[key].preload = 'auto';
     }
 
-    function fallbackToSynth(key, errType, errMsg) {
-        audioLoadErrors[key] = errMsg;
-        let synthBuf = generateSingleSynthBuffer(ctx, key);
-        if (synthBuf) {
-            audioBuffers[key] = synthBuf;
-            audioLoadStatus[key] = "SYNTH";
-            console.log("Synthesized fallback sound for " + key);
-        } else {
-            audioLoadStatus[key] = "FAILED";
+    if (ctx) {
+        for (let key in soundFiles) {
+            let url = soundFiles[key];
+            fetch(url)
+                .then(res => res.arrayBuffer())
+                .then(buf => ctx.decodeAudioData(buf))
+                .then(decoded => {
+                    audioBuffers[key] = decoded;
+                })
+                .catch(() => {});
         }
     }
 }
-
-// Direct native listeners for maximum compatibility with iOS/Chrome autoplay policies
-function resumeAudioContextDirectly() {
-    initAudio();
-    let ctx = getAudioContext();
-    if (ctx && ctx.state === 'suspended') {
-        ctx.resume().then(() => {
-            console.log("AudioContext resumed successfully via direct user interaction");
-        }).catch((err) => {
-            console.warn("Could not resume AudioContext via direct interaction:", err);
-        });
-    }
-}
-
-function forceResetAndTestAudio() {
-    console.log("Force resetting audio context...");
-    audioInitialized = false;
-    audioCtx = null;
-    initAudio();
-    let ctx = getAudioContext();
-    if (ctx) {
-        ctx.resume().then(() => {
-            console.log("Resumed successfully. Playing synthesize test beep...");
-            playSynthSound('click', 1.0);
-            setTimeout(() => {
-                playSound('click', 1.0);
-            }, 120);
-        }).catch((err) => {
-            console.warn("Could not force-resume audio context:", err);
-        });
-    }
-}
-window.addEventListener('click', resumeAudioContextDirectly, { passive: true });
-window.addEventListener('touchstart', resumeAudioContextDirectly, { passive: true });
-window.addEventListener('touchend', resumeAudioContextDirectly, { passive: true });
 
 function playMenuSound() {
     playSound('click', 0.8);
@@ -1328,9 +936,6 @@ function playSound(type, volume = 1.0) {
         // 1. Web Audio API playback if decoded buffer exists
         let ctx = getAudioContext();
         if (ctx && audioBuffers[soundKey]) {
-            if (ctx.state === 'suspended') {
-                ctx.resume().catch(() => {});
-            }
             let source = ctx.createBufferSource();
             source.buffer = audioBuffers[soundKey];
             let gain = ctx.createGain();
@@ -1344,21 +949,10 @@ function playSound(type, volume = 1.0) {
         // 2. HTML5 Audio element fallback (plays actual .mp3 files like click.mp3)
         if (gameSounds && gameSounds[soundKey]) {
             let orig = gameSounds[soundKey];
-            try {
-                let clone = orig.cloneNode(true);
-                clone.volume = safeVolume;
-                let p = clone.play();
-                if (p !== undefined) {
-                    p.catch(() => {
-                        // If cloned play is blocked (common on iOS), try playing the original node
-                        orig.volume = safeVolume;
-                        orig.play().catch(() => {});
-                    });
-                }
-            } catch (cloneError) {
-                orig.volume = safeVolume;
-                orig.play().catch(() => {});
-            }
+            let clone = orig.cloneNode(true);
+            clone.volume = safeVolume;
+            let p = clone.play();
+            if (p !== undefined) p.catch(() => {});
             return;
         }
 
@@ -1368,11 +962,19 @@ function playSound(type, volume = 1.0) {
             return;
         }
     } catch (globalSoundError) {
-        console.error("Error in playSound:", globalSoundError);
+        console.error("Ошибка в playSound:", globalSoundError);
     }
 }
 
+function touchStarted() {
+    initAudio();
+    getAudioContext();
+}
 
+function mousePressed() {
+    initAudio();
+    getAudioContext();
+}
 
 function drawStar(x, y, radius1, radius2, npoints) {
     let angle = TWO_PI / npoints;
@@ -5700,53 +5302,14 @@ function drawDifficultySelect() {
     drawStyledButton(backBtn, "НАЗАД", hB, '#8b949e');
 }
 
-function drawBadge(x, y, w, h, label, col) {
-    push();
-    fill(col);
-    noStroke();
-    rect(x, y, w, h, 3);
-    fill('#ffffff');
-    textSize(8);
-    textStyle(BOLD);
-    textAlign(CENTER, CENTER);
-    text(label.toUpperCase(), x + w/2, y + h/2 + 1);
-    pop();
-}
-
-function drawMiniButton(x, y, w, h, label, isHover, col) {
-    push();
-    if (isHover) {
-        fill(col);
-        cursor(HAND);
-    } else {
-        let hex = getFastRgb(col);
-        fill(`rgba(${hex.r}, ${hex.g}, ${hex.b}, 0.25)`);
-    }
-    stroke(col);
-    strokeWeight(1);
-    rect(x, y, w, h, 3);
-    
-    noStroke();
-    if (isHover) {
-        fill('#ffffff');
-    } else {
-        fill(col);
-    }
-    textSize(8.5);
-    textStyle(BOLD);
-    textAlign(CENTER, CENTER);
-    text(label, x + w/2, y + h/2 + 1);
-    pop();
-}
-
 function drawSettingsPanel() {
     drawModernBackground();
     textFont('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
 
     let cardW = min(width * 0.95, 340);
-    let cardH = min(height * 0.96, 520);
+    let cardH = 260;
     let cx = width/2 - cardW/2;
-    let cy = height/2 - cardH/2;
+    let cy = height * 0.30;
 
     drawGlassCard(cx, cy, cardW, cardH, "НАСТРОЙКИ", "ПАРАМЕТРЫ");
 
@@ -5767,11 +5330,6 @@ function drawSettingsPanel() {
     erudaToggleBtn.y = contentY + 94;
     erudaToggleBtn.w = cardW - 40;
     erudaToggleBtn.h = 34;
-
-    testAudioBtn.x = cx + 20;
-    testAudioBtn.y = contentY + 136;
-    testAudioBtn.w = cardW - 40;
-    testAudioBtn.h = 34;
     
     let hSound = (mouseX > soundToggleBtn.x && mouseX < soundToggleBtn.x + soundToggleBtn.w && mouseY > soundToggleBtn.y && mouseY < soundToggleBtn.y + soundToggleBtn.h);
     drawStyledButton(soundToggleBtn, soundEnabled ? "ЗВУК: ВКЛ" : "ЗВУК: ВЫКЛ", hSound, soundEnabled ? '#2ea043' : '#f85149');
@@ -5781,112 +5339,6 @@ function drawSettingsPanel() {
 
     let hEruda = (mouseX > erudaToggleBtn.x && mouseX < erudaToggleBtn.x + erudaToggleBtn.w && mouseY > erudaToggleBtn.y && mouseY < erudaToggleBtn.y + erudaToggleBtn.h);
     drawStyledButton(erudaToggleBtn, erudaEnabled ? "КОНСОЛЬ ERUDA: ВКЛ" : "КОНСОЛЬ ERUDA: ВЫКЛ", hEruda, erudaEnabled ? '#2ea043' : '#f85149');
-
-    let hTest = (mouseX > testAudioBtn.x && mouseX < testAudioBtn.x + testAudioBtn.w && mouseY > testAudioBtn.y && mouseY < testAudioBtn.y + testAudioBtn.h);
-    drawStyledButton(testAudioBtn, "ТЕСТ ЗВУКА / СБРОС", hTest, '#58a6ff');
-
-    // Dynamic audio context status indicators
-    let ctx = getAudioContext();
-    let audioStatusText = "СТАТУС: ";
-    let statusColor = '#aaaaaa';
-    if (!ctx) {
-        audioStatusText += "НЕ ПОДДЕРЖИВАЕТСЯ";
-        statusColor = '#f85149';
-    } else {
-        let loadedCount = Object.keys(audioBuffers).length;
-        audioStatusText += ctx.state.toUpperCase() + ` (ЗАГРУЖЕНО ${loadedCount}/7)`;
-        if (ctx.state === 'running' && loadedCount === 7) {
-            statusColor = '#2ea043';
-        } else if (ctx.state === 'suspended') {
-            statusColor = '#d29922';
-        } else {
-            statusColor = '#ff7b72';
-        }
-    }
-
-    fill(statusColor);
-    textSize(11);
-    textAlign(CENTER, TOP);
-    text(audioStatusText, width/2, contentY + 182);
-
-    // Custom Sounds Section
-    let listY = contentY + 202;
-    push();
-    stroke('rgba(48, 54, 61, 0.6)');
-    strokeWeight(1);
-    line(cx + 20, listY - 5, cx + cardW - 20, listY - 5);
-    pop();
-    
-    fill('#f0f6fc');
-    textSize(10.5);
-    textStyle(BOLD);
-    textAlign(LEFT, TOP);
-    text("ИМПОРТ ЗВУКОВ (.MP3/.WAV):", cx + 20, listY);
-
-    let startSlotY = listY + 18;
-    soundImportBtns = [];
-    soundResetBtns = [];
-
-    let soundKeys = ['ball_shot', 'ball_wall', 'chip_bounce', 'collide_chip', 'score', 'over', 'click'];
-    let soundLabels = {
-        'ball_shot': 'УДАР МЯЧА',
-        'ball_wall': 'МЯЧ О СТЕНУ',
-        'chip_bounce': 'ОТСКОК ФИШКИ',
-        'collide_chip': 'СТОЛКНОВЕНИЕ',
-        'score': 'ГОЛ / СЧЕТ',
-        'over': 'КОНЕЦ ИГРЫ',
-        'click': 'КЛИК МЕНЮ'
-    };
-
-    for (let i = 0; i < soundKeys.length; i++) {
-        let key = soundKeys[i];
-        let rowY = startSlotY + i * 23;
-        
-        // Draw slot name
-        fill('#f0f6fc');
-        textSize(9.5);
-        textStyle(NORMAL);
-        textAlign(LEFT, CENTER);
-        text(soundLabels[key], cx + 20, rowY + 10);
-        
-        // Draw status badge
-        let status = audioLoadStatus[key] || "IDLE";
-        let badgeColor = '#8b949e';
-        let badgeText = status;
-        if (status === "CUSTOM") {
-            badgeColor = '#2ea043';
-            badgeText = "СВОЙ";
-        } else if (status === "SYNTH") {
-            badgeColor = '#d29922';
-            badgeText = "СИНТЕЗ";
-        } else if (status === "LOADED") {
-            badgeColor = '#58a6ff';
-            badgeText = "MP3 ИГРЫ";
-        } else if (status === "LOADING" || status === "DECODING") {
-            badgeColor = '#8b949e';
-            badgeText = "ЗАГРУЗКА";
-        } else {
-            badgeColor = '#f85149';
-            badgeText = "ОШИБКА";
-        }
-        
-        drawBadge(cx + 124, rowY + 2, 50, 15, badgeText, badgeColor);
-        
-        // Define buttons
-        let importBtn = { key: key, x: cx + 182, y: rowY + 1, w: 62, h: 17 };
-        soundImportBtns.push(importBtn);
-        
-        let hImport = (mouseX > importBtn.x && mouseX < importBtn.x + importBtn.w && mouseY > importBtn.y && mouseY < importBtn.y + importBtn.h);
-        drawMiniButton(importBtn.x, importBtn.y, importBtn.w, importBtn.h, "ОБЗОР", hImport, '#58a6ff');
-        
-        if (status === "CUSTOM") {
-            let resetBtn = { key: key, x: cx + 250, y: rowY + 1, w: 46, h: 17 };
-            soundResetBtns.push(resetBtn);
-            
-            let hReset = (mouseX > resetBtn.x && mouseX < resetBtn.x + resetBtn.w && mouseY > resetBtn.y && mouseY < resetBtn.y + resetBtn.h);
-            drawMiniButton(resetBtn.x, resetBtn.y, resetBtn.w, resetBtn.h, "СБРОС", hReset, '#f85149');
-        }
-    }
 
     // Footer Back button
     backBtn.x = cx + 20;
@@ -7237,10 +6689,6 @@ function startTournamentMatch() {
 
 function touchStarted(e) {
     initAudio(); 
-    let ctx = getAudioContext();
-    if (ctx && ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
-    }
     if (isReplaying) {
         let btnSkip = { x: width - 110, y: 20, w: 90, h: 30 };
         if (mouseX > btnSkip.x && mouseX < btnSkip.x + btnSkip.w && mouseY > btnSkip.y && mouseY < btnSkip.y + btnSkip.h) {
@@ -8017,33 +7465,6 @@ function touchStarted(e) {
         if (mouseX > soundToggleBtn.x && mouseX < soundToggleBtn.x + soundToggleBtn.w && mouseY > soundToggleBtn.y && mouseY < soundToggleBtn.y + soundToggleBtn.h) { soundEnabled = !soundEnabled; playSound('click'); lastTouchTime = millis(); if (e) e.preventDefault(); return false; }
         if (mouseX > vibroToggleBtn.x && mouseX < vibroToggleBtn.x + vibroToggleBtn.w && mouseY > vibroToggleBtn.y && mouseY < vibroToggleBtn.y + vibroToggleBtn.h) { vibrationEnabled = !vibrationEnabled; triggerVibrate(30); lastTouchTime = millis(); if (e) e.preventDefault(); return false; }
         if (mouseX > erudaToggleBtn.x && mouseX < erudaToggleBtn.x + erudaToggleBtn.w && mouseY > erudaToggleBtn.y && mouseY < erudaToggleBtn.y + erudaToggleBtn.h) { toggleEruda(!erudaEnabled); playSound('click'); triggerVibrate(30); lastTouchTime = millis(); if (e) e.preventDefault(); return false; }
-        if (mouseX > testAudioBtn.x && mouseX < testAudioBtn.x + testAudioBtn.w && mouseY > testAudioBtn.y && mouseY < testAudioBtn.y + testAudioBtn.h) { forceResetAndTestAudio(); lastTouchTime = millis(); if (e) e.preventDefault(); return false; }
-
-        // Handle custom sound uploads
-        for (let btn of soundImportBtns) {
-            if (mouseX > btn.x && mouseX < btn.x + btn.w && mouseY > btn.y && mouseY < btn.y + btn.h) {
-                playSound('click');
-                triggerCustomSoundUpload(btn.key);
-                lastTouchTime = millis(); if (e) e.preventDefault(); return false;
-            }
-        }
-        
-        // Handle custom sound resets
-        for (let btn of soundResetBtns) {
-            if (mouseX > btn.x && mouseX < btn.x + btn.w && mouseY > btn.y && mouseY < btn.y + btn.h) {
-                playSound('click');
-                let key = btn.key;
-                deleteCustomSoundFromDB(key)
-                    .then(() => {
-                        reloadSound(key);
-                    })
-                    .catch(err => {
-                        console.error("Failed to delete custom sound:", err);
-                        reloadSound(key);
-                    });
-                lastTouchTime = millis(); if (e) e.preventDefault(); return false;
-            }
-        }
 
         if (mouseX > backBtn.x && mouseX < backBtn.x + backBtn.w && mouseY > backBtn.y && mouseY < backBtn.y + backBtn.h) { 
             playSound('click'); 
